@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
-use crate::resp::RespParser;
+use crate::resp::{RespError, RespParser};
 use crate::store::Store;
 use crate::types::RespValue;
 
@@ -18,46 +18,79 @@ fn handle_client(stream: TcpStream, store: Arc<Store>) {
     loop {
         let request = match parser.parse() {
             Ok(val) => val,
-            Err(_) => break,
+            Err(e) => match e {
+                RespError::Protocol(e) => {
+                    let _ = writer.write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes());
+                    return;
+                }
+                RespError::Io(e) => {
+                    eprintln!("{e}");
+                    return;
+                }
+                RespError::Eof => return,
+            },
         };
 
         match request {
             RespValue::Array(args) => {
+                if args.is_empty() {
+                    let _ = writer.write_all(b"-ERR empty array\r\n");
+                    continue;
+                }
                 let cmd_name = args[0].as_command().unwrap_or_default();
 
                 match cmd_name.as_str() {
-                    "PING" => writer.write_all(b"+PONG\r\n").unwrap(),
+                    "PING" => {
+                        let _ = writer.write_all(b"+PONG\r\n");
+                        continue;
+                    }
                     "GET" => {
-                        if args.len() == 1 {
-                            let response = RespValue::Error("No key provided".to_string());
-                            writer.write_all(&response.serialize()).unwrap();
-                            continue;
-                        }
-                        let key_name = args[1].as_command().unwrap_or_default();
-                        let response = if let Some(value) = store.get(&key_name) {
-                            RespValue::BulkString((*value).clone())
+                        let response: RespValue = if args.len() == 1 {
+                            RespValue::Error(
+                                "ERR wrong number of arguments for 'get' command".to_string(),
+                            )
+                        } else if args.len() == 2 {
+                            let key_name = args[1].as_key().unwrap_or_default();
+                            if let Some(value) = store.get(&key_name) {
+                                RespValue::BulkString((*value).clone())
+                            } else {
+                                RespValue::Null
+                            }
                         } else {
-                            RespValue::Null
+                            RespValue::Error(
+                                "ERR wrong number of arguments for 'get' command".to_string(),
+                            )
                         };
-                        writer.write_all(&response.serialize()).unwrap();
-                    },
+                        let _ = writer.write_all(&response.serialize());
+                    }
                     "SET" => {
-                        if args.len() >= 3 {
+                        if args.len() == 3 {
                             if let RespValue::BulkString(value_bytes) = &args[2] {
-                                let key_name = args[1].as_command().unwrap_or_default();
+                                let key_name = args[1].as_key().unwrap_or_default();
                                 store.set(key_name, value_bytes.clone());
-                                writer.write_all(b"+OK\r\n").unwrap();
-                            } 
-                        }
-                        else {
-                            let response = RespValue::Error("ERR wrong number of arguments".to_string());
-                            writer.write_all(&response.serialize()).unwrap();
+                                let _ = writer.write_all(b"+OK\r\n");
+                            } else {
+                                let response =
+                                    RespValue::Error("ERR wrong type for 'set' value".to_string());
+                                let _ = writer.write_all(&response.serialize());
+                            }
+                        } else {
+                            let response =
+                                RespValue::Error("ERR wrong number of arguments".to_string());
+                            let _ = writer.write_all(&response.serialize());
                         }
                     }
-                    _ => todo!(),
+                    _ => {
+                        let response = RespValue::Error(format!("ERR unknown command: {cmd_name}"));
+                        let _ = writer.write_all(&response.serialize());
+                    }
                 }
-            },
-            _ => todo!(),
+            }
+            _ => {
+                let response =
+                    RespValue::Error(format!("ERR unknown command: {}", parser.get_command()));
+                let _ = writer.write_all(&response.serialize());
+            }
         }
     }
 }

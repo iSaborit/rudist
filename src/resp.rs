@@ -1,10 +1,42 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read};
 
 use crate::types::RespValue;
 
 pub struct RespParser<R: Read> {
     reader: BufReader<R>,
     line_buffer: String,
+}
+
+#[derive(Debug)]
+pub enum RespError {
+    Protocol(String),
+    Io(std::io::Error),
+    Eof,
+}
+
+impl std::error::Error for RespError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RespError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RespError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RespError::Protocol(e) => write!(f, "protocol: {e}"),
+            RespError::Io(e) => write!(f, "io: {e}"),
+            RespError::Eof => write!(f, "eof"),
+        }
+    }
+}
+
+impl From<std::io::Error> for RespError {
+    fn from(value: std::io::Error) -> Self {
+        RespError::Io(value)
+    }
 }
 
 impl<R: Read> RespParser<R> {
@@ -15,86 +47,100 @@ impl<R: Read> RespParser<R> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<RespValue, String> {
+    pub fn get_command(&self) -> String {
+        self.line_buffer.clone()
+    }
+
+    pub fn parse(&mut self) -> Result<RespValue, RespError> {
         let mut prefix = [0u8; 1];
-        self.reader
-            .read_exact(&mut prefix)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_exact(&mut prefix).map_err(|e| {
+            if e.kind() == UnexpectedEof {
+                RespError::Eof
+            } else {
+                RespError::Io(e)
+            }
+        })?;
 
         match prefix[0] {
             b'+' => self.parse_simple_string(),
             b'$' => self.parse_bulk_string(),
             b'*' => self.parse_array(),
-            _ => Err(format!("Tipo de dato no soportado: {}", prefix[0])),
+            b':' => self.parse_number(),
+            b'-' => self.parse_error(),
+
+            _ => Err(RespError::Protocol(format!(
+                "Tipo de dato no soportado: {}",
+                prefix[0]
+            ))),
         }
     }
 
-    pub fn parse_simple_string(&mut self) -> Result<RespValue, String> {
+    pub fn parse_simple_string(&mut self) -> Result<RespValue, RespError> {
         self.line_buffer.clear();
-        self.reader
-            .read_line(&mut self.line_buffer)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_line(&mut self.line_buffer)?;
 
         Ok(RespValue::SimpleString(self.line_buffer.trim().to_string()))
     }
 
-    pub fn parse_bulk_string(&mut self) -> Result<RespValue, String> {
+    pub fn parse_bulk_string(&mut self) -> Result<RespValue, RespError> {
         self.line_buffer.clear();
-        self.reader
-            .read_line(&mut self.line_buffer)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_line(&mut self.line_buffer)?;
 
         // Asumiendo que la línea incluye e
-        let index = self
-            .line_buffer
-            .find("\r\n")
-            .ok_or("Invalid request, \\r\\n missing")?;
+        let index = self.line_buffer.find("\r\n").ok_or(RespError::Protocol(
+            "Invalid request, \\r\\n missing".to_string(),
+        ))?;
+
         let length_str = &self.line_buffer[0..index];
-        let length = length_str.parse::<usize>().map_err(|e| e.to_string())?;
+        let length_t = length_str
+            .parse::<i64>()
+            .map_err(|e| RespError::Protocol(e.to_string()))?;
+
+        if length_t == -1 {
+            return Ok(RespValue::Null);
+        } else if length_t < -1 {
+            return Err(RespError::Protocol("invalid value".to_string()));
+        }
+
+        let length = length_t as usize;
 
         let mut value = vec![0; length];
 
-        self.reader
-            .read_exact(&mut value)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_exact(&mut value)?;
 
         let mut trailing_control = [0u8; 2];
-        self.reader
-            .read_exact(&mut trailing_control)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_exact(&mut trailing_control)?;
 
         if &trailing_control != b"\r\n" {
-            return Err(format!("Invalid format, \\r\\n missing."));
+            return Err(RespError::Protocol(
+                "Invalid format, \\r\\n missing.".to_string(),
+            ));
         }
 
         Ok(RespValue::BulkString(value))
     }
 
-    fn parse_array(&mut self) -> Result<RespValue, String> {
+    fn parse_array(&mut self) -> Result<RespValue, RespError> {
         self.line_buffer.clear();
-        self.reader
-            .read_line(&mut self.line_buffer)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_line(&mut self.line_buffer)?;
 
-        let index = self
-            .line_buffer
-            .find("\r\n")
-            .ok_or("Invalid request, \\r\\n missing")?;
-
-        if self.line_buffer.starts_with("-1") {
-            return Ok(RespValue::Null);
-        }
+        let index = self.line_buffer.find("\r\n").ok_or(RespError::Protocol(
+            "Invalid request, \\r\\n missing".to_string(),
+        ))?;
 
         let count_str = &self.line_buffer[..index];
 
-        // 3. Manejo de Null Array (*-1\r\n)
-        if count_str == "-1" {
-            return Ok(RespValue::Null);
-        }
-
         let mut value: Vec<RespValue> = Vec::new();
 
-        let length = count_str.parse::<i64>().map_err(|e| e.to_string())?;
+        let length = count_str
+            .parse::<i64>()
+            .map_err(|e| RespError::Protocol(e.to_string()))?;
+
+        if length == -1 {
+            return Ok(RespValue::Null);
+        } else if length < -1 {
+            return Err(RespError::Protocol("invalid array length".to_string()));
+        }
 
         for _ in 0..length {
             let item = self.parse()?;
@@ -102,6 +148,25 @@ impl<R: Read> RespParser<R> {
         }
 
         Ok(RespValue::Array(value))
+    }
+
+    fn parse_error(&mut self) -> Result<RespValue, RespError> {
+        self.line_buffer.clear();
+        self.reader.read_line(&mut self.line_buffer)?;
+
+        Ok(RespValue::Error(self.line_buffer.trim().to_string()))
+    }
+
+    fn parse_number(&mut self) -> Result<RespValue, RespError> {
+        self.line_buffer.clear();
+        self.reader.read_line(&mut self.line_buffer)?;
+
+        Ok(RespValue::Integer(
+            self.line_buffer
+                .trim()
+                .parse::<i64>()
+                .map_err(|e| RespError::Protocol(e.to_string()))?,
+        ))
     }
 }
 
@@ -121,6 +186,28 @@ mod tests {
             RespValue::SimpleString(s) => assert_eq!(s, "OK"),
             _ => panic!("Se esperaba un SimpleString"),
         }
+    }
+
+    #[test]
+    fn test_parse_integer() {
+        let data = ":123\r\n";
+        let mut parser = RespParser::new(Cursor::new(data));
+        let result = parser.parse().unwrap();
+
+        assert_eq!(result, RespValue::Integer(123));
+    }
+
+    #[test]
+    fn test_parse_integer_on_array() {
+        let data = "*2\r\n:-123\r\n$4\r\nPING\r\n";
+        let mut parser = RespParser::new(Cursor::new(data));
+        let result = parser.parse().unwrap();
+
+        let mut expected = Vec::new();
+        expected.push(RespValue::Integer(-123));
+        expected.push(RespValue::BulkString(b"PING".to_vec()));
+
+        assert_eq!(result, RespValue::Array(expected));
     }
 
     #[test]

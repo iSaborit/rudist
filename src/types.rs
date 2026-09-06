@@ -12,9 +12,15 @@ impl RespValue {
     pub fn as_command(&self) -> Option<String> {
         if let Self::BulkString(bytes) = self {
             return Some(String::from_utf8_lossy(bytes).to_uppercase());
-        } else {
-            return None;
         }
+        None
+    }
+
+    pub fn as_key(&self) -> Option<String> {
+        if let Self::BulkString(bytes) = self {
+            return Some(String::from_utf8_lossy(bytes).to_string());
+        }
+        None
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -29,16 +35,15 @@ impl RespValue {
 
                 res
             }
-            RespValue::Null => format!("-1\r\n").into_bytes(),
+            RespValue::Null => "$-1\r\n".to_string().into_bytes(),
             RespValue::Array(array) => {
-                let mut res = format!("*{}\r\n",array.len()).into_bytes();
+                let mut res = format!("*{}\r\n", array.len()).into_bytes();
                 for item in array {
                     res.extend_from_slice(&item.serialize());
                 }
 
                 res
             }
-            _ => todo!(),
         }
     }
 }

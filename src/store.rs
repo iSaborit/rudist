@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub type Bytes = Arc<Vec<u8>>;
@@ -15,14 +15,14 @@ impl Store {
     }
 
     // Generate test
-    pub fn set(&self, key : String, value : Vec<u8>) {
+    pub fn set(&self, key: String, value: Vec<u8>) {
         let mut write_lock = self.data.write().expect("Lock poisoned");
         write_lock.insert(key, Arc::new(value));
     }
 
     // Generate test
-    pub fn get(&self, key : &str) -> Option<Bytes> {
-        let mut guard = self.data.read().expect("Lock poisoned");
+    pub fn get(&self, key: &str) -> Option<Bytes> {
+        let guard = self.data.read().expect("Lock poisoned");
         guard.get(key).cloned()
     }
 }
@@ -93,11 +93,7 @@ mod tests {
             String::from("key2"),
             String::from("key3"),
         ];
-        let values = vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-            vec![7, 8, 9],
-        ];
+        let values = vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
 
         let store_clone = store.clone();
         let keys_moved = keys.clone();
