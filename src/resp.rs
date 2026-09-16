@@ -203,9 +203,10 @@ mod tests {
         let mut parser = RespParser::new(Cursor::new(data));
         let result = parser.parse().unwrap();
 
-        let mut expected = Vec::new();
-        expected.push(RespValue::Integer(-123));
-        expected.push(RespValue::BulkString(b"PING".to_vec()));
+        let expected = vec![
+            RespValue::Integer(-123),
+            RespValue::BulkString(b"PING".to_vec()),
+        ];
 
         assert_eq!(result, RespValue::Array(expected));
     }
