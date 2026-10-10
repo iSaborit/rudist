@@ -13,6 +13,8 @@ A tiny Redis-like server written in Rust.
 
 - RESP parsing for:
   - Simple Strings (`+OK\r\n`)
+  - Errors (`-ERR ...\r\n`)
+  - Integers (`:123\r\n`)
   - Bulk Strings (`$<len>\r\n...\r\n`)
   - Arrays (`*<n>\r\n...`)
   - Null array (`*-1\r\n`)
@@ -20,8 +22,12 @@ A tiny Redis-like server written in Rust.
 - In-memory key/value store with `RwLock<HashMap<...>>`
 - Basic commands:
   - `PING` → `PONG`
+  - `ECHO <msg>` → `<msg>`
   - `GET <key>` → bulk string or null
   - `SET <key> <value>` → `OK`
+  - `DEL <key> [key ...]` → number of keys removed
+  - `EXISTS <key> [key ...]` → number of keys found
+  - `DBSIZE` → number of keys
 
 ## Requirements
 
@@ -50,6 +56,8 @@ If you have Redis installed, you can use `redis-cli` to talk to `rudist`:
 redis-cli -h 127.0.0.1 -p 6379 PING
 redis-cli -h 127.0.0.1 -p 6379 SET mykey hello
 redis-cli -h 127.0.0.1 -p 6379 GET mykey
+redis-cli -h 127.0.0.1 -p 6379 DEL mykey
+redis-cli -h 127.0.0.1 -p 6379 DBSIZE
 ```
 
 ### Using netcat (`nc`)
@@ -78,6 +86,7 @@ cargo test
 If you want to keep evolving this project, these are good next steps:
 
 - Implement RESP Errors/Integers fully and improve invalid-frame handling
+- Add observability: `INFO`, `MONITOR`, `SLOWLOG`
 - Add key expiration (TTL)
 - Add persistence (AOF) and/or snapshots
 - Add async I/O (Tokio) instead of thread-per-connection

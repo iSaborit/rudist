@@ -47,6 +47,7 @@ impl<R: Read> RespParser<R> {
         }
     }
 
+    #[allow(unused)]
     pub fn get_command(&self) -> String {
         self.line_buffer.clone()
     }

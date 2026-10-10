@@ -1,3 +1,5 @@
+mod cmd;
+mod ctx;
 mod resp;
 mod store;
 mod types;
@@ -7,89 +9,35 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
+use crate::cmd::dispatch;
+use crate::ctx::Ctx;
 use crate::resp::{RespError, RespParser};
 use crate::store::Store;
 use crate::types::RespValue;
 
-fn handle_client(stream: TcpStream, store: Arc<Store>) {
+fn handle_client(stream: TcpStream, store: Arc<Store>, ctx: Arc<Ctx>) {
     let mut writer = stream.try_clone().unwrap();
     let mut parser = RespParser::new(stream);
-
     loop {
         let request = match parser.parse() {
-            Ok(val) => val,
-            Err(e) => match e {
-                RespError::Protocol(e) => {
-                    let _ = writer.write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes());
-                    return;
-                }
-                RespError::Io(e) => {
-                    eprintln!("{e}");
-                    return;
-                }
-                RespError::Eof => return,
-            },
+            Ok(v) => v,
+            Err(RespError::Eof) => return,
+            Err(RespError::Io(e)) => {
+                eprintln!("{e}");
+                return;
+            }
+            Err(RespError::Protocol(e)) => {
+                let _ = writer.write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes());
+                return;
+            }
         };
-
         match request {
             RespValue::Array(args) => {
-                if args.is_empty() {
-                    let _ = writer.write_all(b"-ERR empty array\r\n");
-                    continue;
-                }
-                let cmd_name = args[0].as_command().unwrap_or_default();
-
-                match cmd_name.as_str() {
-                    "PING" => {
-                        let _ = writer.write_all(b"+PONG\r\n");
-                        continue;
-                    }
-                    "GET" => {
-                        let response: RespValue = if args.len() == 1 {
-                            RespValue::Error(
-                                "ERR wrong number of arguments for 'get' command".to_string(),
-                            )
-                        } else if args.len() == 2 {
-                            let key_name = args[1].as_key().unwrap_or_default();
-                            if let Some(value) = store.get(&key_name) {
-                                RespValue::BulkString((*value).clone())
-                            } else {
-                                RespValue::Null
-                            }
-                        } else {
-                            RespValue::Error(
-                                "ERR wrong number of arguments for 'get' command".to_string(),
-                            )
-                        };
-                        let _ = writer.write_all(&response.serialize());
-                    }
-                    "SET" => {
-                        if args.len() == 3 {
-                            if let RespValue::BulkString(value_bytes) = &args[2] {
-                                let key_name = args[1].as_key().unwrap_or_default();
-                                store.set(key_name, value_bytes.clone());
-                                let _ = writer.write_all(b"+OK\r\n");
-                            } else {
-                                let response =
-                                    RespValue::Error("ERR wrong type for 'set' value".to_string());
-                                let _ = writer.write_all(&response.serialize());
-                            }
-                        } else {
-                            let response =
-                                RespValue::Error("ERR wrong number of arguments".to_string());
-                            let _ = writer.write_all(&response.serialize());
-                        }
-                    }
-                    _ => {
-                        let response = RespValue::Error(format!("ERR unknown command: {cmd_name}"));
-                        let _ = writer.write_all(&response.serialize());
-                    }
-                }
+                let reply = dispatch(&args, &store, &ctx);
+                let _ = writer.write_all(&reply.serialize());
             }
             _ => {
-                let response =
-                    RespValue::Error(format!("ERR unknown command: {}", parser.get_command()));
-                let _ = writer.write_all(&response.serialize());
+                let _ = writer.write_all(b"-ERR expected array\r\n");
             }
         }
     }
@@ -102,11 +50,14 @@ fn main() -> std::io::Result<()> {
 
     let store = Arc::new(Store::new());
 
+    let ctx = Arc::new(Ctx::new());
+
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let store_cloned = Arc::clone(&store);
-                thread::spawn(move || handle_client(stream, store_cloned));
+                let ctx_clone = Arc::clone(&ctx);
+                thread::spawn(move || handle_client(stream, store_cloned, ctx_clone));
             }
             Err(e) => {
                 eprintln!("X > Error! {:?}", e);

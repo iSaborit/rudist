@@ -14,16 +14,29 @@ impl Store {
         }
     }
 
-    // Generate test
     pub fn set(&self, key: String, value: Vec<u8>) {
         let mut write_lock = self.data.write().expect("Lock poisoned");
         write_lock.insert(key, Arc::new(value));
     }
 
-    // Generate test
+    pub fn del(&self, key: &str) -> bool {
+        let mut write_lock = self.data.write().expect("Lock poisoned");
+        write_lock.remove(key).is_some()
+    }
+
     pub fn get(&self, key: &str) -> Option<Bytes> {
         let guard = self.data.read().expect("Lock poisoned");
         guard.get(key).cloned()
+    }
+
+    pub fn exists(&self, key: &str) -> bool {
+        let guard = self.data.read().expect("Lock poisoned");
+        guard.contains_key(key)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        let guard = self.data.read().expect("Lock poisoned");
+        guard.keys().len()
     }
 }
 
